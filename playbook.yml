@@ -1,0 +1,113 @@
+---
+- name: Playbook Name
+  hosts: all, localhost
+  tasks:
+  - name: Wireguard Installation and key-pair creation
+    shell: |
+      sudo apt update -y
+      sudo apt install wireguard -y
+      wg genkey | tee privatekey | wg pubkey > publickey
+
+- hosts: localhost
+  tasks:  
+    #  - name: Install k3s on local
+    #    shell: |
+    #      wget https://github.com/k3s-io/k3s/releases/download/v1.23.5%2Bk3s1/k3s
+    #      chmod +x k3s
+    #      sudo ./k3s server
+  
+  - name: Get public-key from local wg
+    command: cat privatekey
+    register: local_priv_key     
+
+  - name: Get private-key from local wg
+    command: cat publickey
+    register: local_pub_key
+
+  - name: Set new variables
+    set_fact:
+      local_priv_key: "{{ local_priv_key.stdout }}"     
+      local_pub_key: "{{ local_pub_key.stdout }}"     
+
+- hosts: all
+  tasks:  
+  - name: Take wg private-key from vm
+    slurp: src=/home/azureuser/privatekey
+    register: vm_priv_key
+
+  - name: Set private-key variables for vms
+    set_fact:
+      vm_priv_key: "{{ vm_priv_key.content | b64decode }}"
+
+  - name: Take wg public-key from vm
+    slurp: src=/home/azureuser/publickey
+    register: vm_pub_key
+    delegate_to: "{{ item }}"
+    loop:
+      - azure-vm-1
+      - azure-vm-2
+    become: true
+    loop_control:
+      label: "{{ item }}"    
+
+  - name: Set public-key variables for vms
+    set_fact:
+      vm_1_pub_key: "{{ vm_pub_key.results[0].content | b64decode }}"
+      vm_2_pub_key: "{{ vm_pub_key.results[1].content | b64decode }}"    
+    
+- hosts: localhost
+  tasks:
+  - name: Create wg .conf file on local
+    template:
+      src: local_wg_conf.j2
+      dest: /etc/wireguard/wg0.conf 
+    vars:
+      vm_1_pub_key: "{{ hostvars['azure-vm-1']['vm_1_pub_key'] }}"    
+      vm_2_pub_key: "{{ hostvars['azure-vm-2']['vm_2_pub_key'] }}"    
+    become: true
+    become_method: sudo    
+
+- hosts: all
+  tasks:  
+  - name: Create wg .conf file
+    template:
+      src: vm_wg_conf.j2
+      dest: /etc/wireguard/wg0.conf
+    vars:
+      local_pub_key: "{{ hostvars['localhost']['local_pub_key'] }}"    
+    become: true
+    become_method: sudo      
+
+- hosts: all, localhost
+  tasks: 
+  - name: Chechk if wg0 interface is active
+    command: ip link show wg0
+    register: wg_status
+    ignore_errors: true  
+
+  - name: Wireguard Start
+    command: wg-quick up wg0
+    when: wg_status.rc != 0  
+    become_method: sudo  
+
+- hosts: localhost
+  tasks:
+  - name: Ping to Azure VM priv-ip
+    command: ping -c 100 {{ item }}
+    async: 0
+    poll: 0
+    loop:
+      - 10.0.0.2
+      - 10.0.0.3
+    register: ping_tasks
+
+- hosts: all
+  tasks:
+  - name: Wait for 2 seconds before connecting VMs
+    pause: 
+      seconds: 2
+
+  - name: Connect vm to local instance
+    command: curl -sfL https://get.k3s.io | K3S_URL=https://10.0.0.1:6443 K3S_TOKEN=999b508b1013638fca1614fccadac831 sh -
+    become: true    
+

@@ -1,0 +1,15 @@
+[Interface]
+Address = 10.0.0.1/24
+PrivateKey = {{ local_priv_key }}
+ListenPort = 51820
+
+[Peer]
+PublicKey = {{ vm_1_pub_key }}
+AllowedIPs = 10.0.0.2/32
+Endpoint = 23.102.8.140:51820
+
+[Peer]
+PublicKey = {{ vm_2_pub_key }}
+AllowedIPs = 10.0.0.3/32
+Endpoint = 23.102.7.10:51820
+
